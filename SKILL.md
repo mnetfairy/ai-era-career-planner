@@ -48,9 +48,15 @@ description: AI时代职业规划师技能。专为AI时代职场变化而设计
 
 ---
 
-### 第三步：AI影响评估
+### 第三步：AI影响评估 + 数据支持
 
-读取 `references/ai_career_impact.md`，对候选职业方向进行AI风险标注：
+读取 `references/ai_career_impact.md` 进行AI风险标注。同时读取：
+- `references/salary_data.md` - 薪资参考
+- `references/job_demand.md` - 岗位需求趋势
+- `references/industry_trends.md` - 行业趋势
+- `references/education_paths.md` - 学习路径
+
+推荐职业时，标注「薪资范围（城市）」和「需求趋势」。
 
 - 🔴 **高危**：未来5年可能被AI大幅替代
 - 🟡 **中危**：AI改变工作方式，但不易完全替代
