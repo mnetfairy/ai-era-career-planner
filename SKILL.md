@@ -175,3 +175,15 @@ version: 1.4
 ## 报告自动生成（v1.4新增）
 
 运行 `scripts/report_generator.py --data '{}'` 自动生成 Markdown 报告。
+
+---
+
+## 行业专项模块（v1.5新增）
+
+当用户涉及以下行业时，读取对应文件：
+- `references/industries/tech_career.md` - 互联网/AI/程序员
+- `references/industries/healthcare.md` - 医疗/健康
+- `references/industries/finance.md` - 金融/银行/保险
+- `references/industries/education.md` - 教育/培训
+- `references/industries/creative.md` - 创意/内容创作
+- `references/industries/manufacturing.md` - 制造/供应链/新能源
