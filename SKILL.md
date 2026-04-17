@@ -1,7 +1,7 @@
 ---
 name: ai-era-career-planner
 description: AI时代职业规划师技能。专为AI时代职场变化而设计，帮助用户应对AI带来的职业冲击与机遇。当用户询问职业规划、职业建议、选专业、职场转型、未来就业方向时触发。功能包括：收集用户基本信息、霍兰德职业兴趣测评、职业价值观分析、AI时代职业影响评估（高危/中危/低危分级），并输出完整的个性化职业规划报告。关键词：职业规划、选专业、工作建议、做什么工作好、职业转型、AI时代职业、AI替代、哪些工作会被AI取代。
-version: 1.4
+version: 1.4.0
 ---
 
 # AI时代职业规划师
@@ -187,3 +187,12 @@ version: 1.4
 - `references/industries/education.md` - 教育/培训
 - `references/industries/creative.md` - 创意/内容创作
 - `references/industries/manufacturing.md` - 制造/供应链/新能源
+
+---
+
+## 纵向追踪与复盘（v1.6新增）
+
+生成报告后，读取 `references/tracker_system.md` 建立用户追踪档案：
+- 自动记录用户规划摘要和关键里程碑
+- 30天后主动跟进复盘
+- 追踪结果存入用户 memory 文件
