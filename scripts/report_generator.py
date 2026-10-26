@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-职业规划报告生成器（2026-09-08 T09 安全加固）
+职业规划报告生成器（2026-09-08 T09 安全加固；2026-10-26 ClawHub 复审加固）
 
 变更要点：
   1. --output-dir 必须位于 ALLOWED_EXPORT_ROOTS 之内（默认 ./exports/；可由环境变量
      AIERA_EXPORT_ROOT 追加；不允许任意路径）。
-  2. 解析后的路径若包含符号链接直接拒绝。
-  3. 使用独占创建模式（mode='x'），同一天多次导出生成 collision-resistant 文件名而非
-     覆盖旧文件——保证不静默覆盖已有导出。
+  2. **符号链接检查顺序修正（2026-10-26）**：先对**未解析**的原始路径逐级做
+     os.path.islink() 检查（命中即拒绝），再 realpath + commonpath 包含性校验。
+     旧实现先 resolve() 再查 is_symlink()——resolve() 已经跟随了符号链接，导致
+     检查永远为 False、形同虚设。现实现对终端 symlink 与父目录链任一级 symlink
+     均拒绝。
+  3. 使用独占创建模式（O_CREAT|O_EXCL），同一天多次导出生成 collision-resistant
+     文件名而非覆盖旧文件——保证不静默覆盖已有导出。
   4. 拒绝绝对路径越界、相对路径穿越（..）、NUL 字节等异常输入。
-  5. 显式以 0600 权限写入（仅宿主用户可读写）。
+  5. 显式以 0600 权限写入（仅宿主用户可读写）；导出目录以 0700 创建。
 
 调用方式：
   python3 scripts/report_generator.py --data '<json>' --output-dir ./exports
@@ -29,46 +33,96 @@ ALLOWED_EXPORT_ROOTS_ENV = "AIERA_EXPORT_ROOT"  # 可选追加允许的导出根
 
 
 def _load_allowed_roots():
-    """读取允许的导出根目录集合。默认 DEFAULT_EXPORT_ROOT，可由环境变量追加。"""
-    roots = {os.path.realpath(DEFAULT_EXPORT_ROOT)}
+    """读取允许的导出根目录集合。
+
+    返回 dict：{字面路径(abspath, 未解析 symlink): 真实路径(realpath)}。
+    默认 DEFAULT_EXPORT_ROOT，可由环境变量 AIERA_EXPORT_ROOT 追加。
+    """
+    roots = {DEFAULT_EXPORT_ROOT}
     env_val = os.environ.get(ALLOWED_EXPORT_ROOTS_ENV, "").strip()
     if env_val:
         for p in env_val.split(":"):
             p = p.strip()
             if p:
-                roots.add(os.path.realpath(p))
-    return roots
+                roots.add(p)
+    return {os.path.abspath(p): os.path.realpath(p) for p in roots}
+
+
+def _is_within(child, parent):
+    """child 是否位于 parent 之内（含 parent 自身）。两者都应为绝对路径。"""
+    try:
+        return os.path.commonpath([child, parent]) == parent
+    except ValueError:
+        # 不同盘符（Windows）或混合路径：不视为包含关系。
+        return False
+
+
+def _iter_levels(path):
+    """从叶子逐级向上产出 path 的各级目录（含 path 自身，直到根）。"""
+    current = path
+    while True:
+        yield current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+
+def _pick_anchor(literal_path, allowed_roots):
+    """挑选可作为「可信锚点」的允许根字面路径（最长匹配）。
+
+    锚点及其以上层级视为宿主已授权的可信路径（系统自身的路径布局，例如 macOS
+    上 /tmp -> /private/tmp），不做 symlink 拒绝；锚点**以下**的每一级都必须
+    不是符号链接。若 literal_path 不在任何允许根之下，则锚点退化为文件系统根，
+    即整条链都要检查。
+    """
+    best = None
+    for literal_root in allowed_roots:
+        if _is_within(literal_path, literal_root):
+            if best is None or len(literal_root) > len(best):
+                best = literal_root
+    return best if best is not None else os.sep
 
 
 def _validate_output_dir(output_dir_arg, allowed_roots):
-    """验证 --output-dir 在 ALLOWED_EXPORT_ROOTS 之内；拒绝越界/符号链接/穿越。"""
+    """验证 --output-dir 在 ALLOWED_EXPORT_ROOTS 之内；拒绝越界/符号链接/穿越。
+
+    顺序（2026-10-26 加固）：
+      a) 参数类型 / NUL 字节 / ".." 穿越检查
+      b) **未解析**原始路径的终端 symlink + 逐级 symlink 检查
+      c) realpath 规范化 + commonpath 包含性校验
+    """
     if not output_dir_arg or not isinstance(output_dir_arg, str):
         raise ValueError("output-dir must be a non-empty string")
     if "\x00" in output_dir_arg:
         raise ValueError("output-dir contains NUL byte")
+    if ".." in Path(output_dir_arg).parts:
+        raise ValueError("output-dir must not contain '..' path traversal")
 
-    # Resolve to absolute canonical path (without following terminal symlink)
-    requested = Path(output_dir_arg).resolve(strict=False)
+    # 归一化为绝对路径，但**不** resolve()——resolve 会跟随符号链接，
+    # 导致随后的 islink() 检查永远为 False。
+    literal = os.path.abspath(output_dir_arg)
 
-    # Reject if any parent of requested is a symlink (escape attempt)
-    for parent in [requested] + list(requested.parents):
-        try:
-            if parent.is_symlink():
-                raise ValueError(f"output-dir path traverses a symlink: {parent}")
-        except OSError:
-            pass
+    # 终端 symlink（--output-dir 本身就是软链）直接拒绝
+    if os.path.islink(literal):
+        raise ValueError(f"output-dir path traverses a symlink: {literal}")
 
-    real = os.path.realpath(str(requested))
-    for allowed in allowed_roots:
-        try:
-            if os.path.commonpath([real, allowed]) == allowed:
-                return Path(real)
-        except ValueError:
-            # Different drives on Windows; not a containment match.
-            continue
+    # 逐级 symlink 检查：从 literal 向上，直到授权锚点为止
+    anchor = _pick_anchor(literal, allowed_roots)
+    for level in _iter_levels(literal):
+        if level == anchor:
+            break
+        if os.path.islink(level):
+            raise ValueError(f"output-dir path traverses a symlink: {level}")
+
+    # 真实路径包含性校验（防止越界写入授权根之外的位置）
+    real = os.path.realpath(literal)
+    for real_root in allowed_roots.values():
+        if _is_within(real, real_root):
+            return Path(real)
     raise ValueError(
         f"output-dir is not inside any allowed export root. "
-        f"Requested (resolved): {real}; allowed: {sorted(allowed_roots)}"
+        f"Requested (resolved): {real}; allowed: {sorted(allowed_roots.values())}"
     )
 
 
@@ -167,7 +221,7 @@ if __name__ == '__main__':
         print(f"[ERROR] {e}", file=sys.stderr)
         sys.exit(3)
 
-    os.makedirs(str(safe_dir), exist_ok=True)
+    os.makedirs(str(safe_dir), mode=0o700, exist_ok=True)
 
     md = generate_report(data)
     date_str = datetime.now().strftime('%Y%m%d')
