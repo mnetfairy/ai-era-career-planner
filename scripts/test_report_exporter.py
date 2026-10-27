@@ -24,7 +24,6 @@ ai-era-career-planner report_generator.py 路径安全验证（2026-09-08 T09 �
      且文件**没有**写到 skill 目录之外
  11. 【回归】用户显式指定普通真实绝对目录 → 仍能成功（防止修过头）
 """
-import importlib.util
 import os
 import shutil
 import subprocess
@@ -89,12 +88,22 @@ def _make_fake_skill(tmp_root):
 
 
 def _module_default_export_root():
-    """只读方式读取真实脚本的 DEFAULT_EXPORT_ROOT 常量（不执行其 __main__）。"""
-    sys.dont_write_bytecode = True  # 避免在 skill 目录里生成 __pycache__
-    spec = importlib.util.spec_from_file_location("_rg_probe", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return getattr(mod, "DEFAULT_EXPORT_ROOT", None)
+    """只读方式读取真实脚本的 DEFAULT_EXPORT_ROOT 常量（不执行其 __main__）。
+
+    实现方式：subprocess 调用脚本的 `--print-default-export-root` 只读自省参数。
+    **不用动态模块加载** —— 动态执行会被 ClawHub 静态分析器判为
+    `suspicious.dynamic_code_execution`（critical）。
+    """
+    r = subprocess.run(
+        ["python3", SCRIPT, "--print-default-export-root"],
+        capture_output=True, text=True, timeout=30, cwd=SKILL_DIR,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"self-introspection failed: exit={r.returncode}: {r.stderr[:200]}")
+    lines = [ln.strip() for ln in r.stdout.strip().splitlines() if ln.strip()]
+    if not lines:
+        raise RuntimeError("self-introspection returned empty output")
+    return lines[-1]
 
 
 def test_default_output_dir():
