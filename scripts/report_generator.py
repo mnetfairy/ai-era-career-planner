@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-职业规划报告生成器（2026-09-08 T09 安全加固；2026-10-26 ClawHub 复审加固）
+职业规划报告生成器（2026-09-08 T09 安全加固；2026-10-26 ClawHub 复审加固；
+2026-11-10 ClawHub 安全整改：导出根收敛到 ./exports/ 之内）
 
 变更要点：
-  1. --output-dir 必须位于 ALLOWED_EXPORT_ROOTS 之内（默认 ./exports/；可由环境变量
-     AIERA_EXPORT_ROOT 追加；不允许任意路径）。
+  1. --output-dir 必须位于 ./exports/ 之内（唯一允许根 DEFAULT_EXPORT_ROOT）。
+     环境变量 AIERA_EXPORT_ROOT **不再能扩展到任意路径**：它只能追加
+     ./exports/ **之内**的子目录；相对路径、根目录 `/`、家目录、绝对路径逃逸
+     一律丢弃并记日志（2026-11-10 整改，消 SDI-3「env 扩展写边界」）。
   2. **符号链接检查顺序修正（2026-10-26）**：先对**未解析**的原始路径逐级做
      os.path.islink() 检查（命中即拒绝），再 realpath + commonpath 包含性校验。
      旧实现先 resolve() 再查 is_symlink()——resolve() 已经跟随了符号链接，导致
@@ -29,35 +32,69 @@ from pathlib import Path
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_DIR = os.path.dirname(THIS_DIR)
 DEFAULT_EXPORT_ROOT = os.path.join(SKILL_DIR, "exports")
-ALLOWED_EXPORT_ROOTS_ENV = "AIERA_EXPORT_ROOT"  # 可选追加允许的导出根目录（绝对路径列表，:分隔）
+# 🆕 2026-11-10 整改：环境变量语义收窄 —— 只能追加 ./exports/ 之内的子目录，
+# 不再是「任意允许根」。名字保留是为了兼容外部调用方（环境变量名不变）。
+EXPORT_ROOT_SUBDIR_ENV = "AIERA_EXPORT_ROOT"
+
+
+def _warn(msg):
+    """只读告警：写到 stderr（stdout 保留给 JSON 输出）。"""
+    print(f"[report_generator] WARNING: {msg}", file=sys.stderr)
 
 
 def _load_allowed_roots():
     """读取允许的导出根目录集合。
 
     返回 dict：{字面路径(abspath, 未解析 symlink): 真实路径(realpath)}。
-    默认 DEFAULT_EXPORT_ROOT，可由环境变量 AIERA_EXPORT_ROOT 追加。
 
-    2026-10-27 加固：**允许根自身是符号链接时，该根被直接剔除**——
+    2026-11-10 整改（ClawHub SDI-3 / TP4）：**允许根集合 = {DEFAULT_EXPORT_ROOT}**
+    （= SKILL_DIR/exports/）。环境变量 AIERA_EXPORT_ROOT 不再能扩展写边界，
+    只能追加 ./exports/ **之内**的子目录；候选路径必须同时满足：
+      1) 是绝对路径（相对路径一律丢弃）；
+      2) 字面路径位于 DEFAULT_EXPORT_ROOT 之内；
+      3) 解析符号链接后的真实路径仍位于 DEFAULT_EXPORT_ROOT 的真实路径之内；
+      4) 候选自身不是符号链接，且 DEFAULT_EXPORT_ROOT 自身也不是符号链接。
+    不满足者**丢弃并记日志**（根目录 `/`、家目录、任何绝对路径逃逸均被丢弃）。
+
+    2026-10-27 加固（保留）：**允许根自身是符号链接时，该根被直接剔除**——
     它不再能授权任何写入。旧实现把允许根的「字面路径」当作豁免锚点，
     允许根本身是 symlink 时检查被跳过，文件可写到允许根之外。
     """
-    roots = {DEFAULT_EXPORT_ROOT}
-    env_val = os.environ.get(ALLOWED_EXPORT_ROOTS_ENV, "").strip()
+    allowed = {}
+
+    default_literal = os.path.abspath(DEFAULT_EXPORT_ROOT)
+    # 默认根自身是 symlink → 不可用于授权（连同下面的 env 候选一并作废：
+    # 否则 `<exports>/sub` 会把 realpath 解析到 skill 目录之外）。
+    default_trustworthy = not os.path.islink(default_literal)
+    if default_trustworthy:
+        allowed[default_literal] = os.path.realpath(default_literal)
+    else:
+        _warn(f"default export root is a symlink, not usable as an allowed root: {default_literal}")
+
+    env_val = os.environ.get(EXPORT_ROOT_SUBDIR_ENV, "").strip()
     if env_val:
         for p in env_val.split(":"):
             p = p.strip()
-            if p:
-                roots.add(p)
-
-    allowed = {}
-    for p in roots:
-        literal = os.path.abspath(p)
-        # 允许根本身是符号链接 → 不可用于授权（默认 exports/ 与
-        # AIERA_EXPORT_ROOT 走同一条检查路径）。
-        if os.path.islink(literal):
-            continue
-        allowed[literal] = os.path.realpath(literal)
+            if not p:
+                continue
+            if not default_trustworthy:
+                _warn(f"{EXPORT_ROOT_SUBDIR_ENV} ignored: default export root is a symlink")
+                break
+            if not os.path.isabs(p):
+                _warn(f"{EXPORT_ROOT_SUBDIR_ENV} ignored (not an absolute path): {p}")
+                continue
+            literal = os.path.abspath(p)
+            if not _is_within(literal, default_literal):
+                _warn(f"{EXPORT_ROOT_SUBDIR_ENV} ignored (outside {DEFAULT_EXPORT_ROOT}): {p}")
+                continue
+            if os.path.islink(literal):
+                _warn(f"{EXPORT_ROOT_SUBDIR_ENV} ignored (path is a symlink): {p}")
+                continue
+            real = os.path.realpath(literal)
+            if not _is_within(real, allowed[default_literal]):
+                _warn(f"{EXPORT_ROOT_SUBDIR_ENV} ignored (resolves outside the export root): {p}")
+                continue
+            allowed[literal] = real
     return allowed
 
 
@@ -101,7 +138,7 @@ def _pick_anchor(literal_path, allowed_roots):
 
 
 def _validate_output_dir(output_dir_arg, allowed_roots):
-    """验证 --output-dir 在 ALLOWED_EXPORT_ROOTS 之内；拒绝越界/符号链接/穿越。
+    """验证 --output-dir 在允许根（默认 ./exports/）之内；拒绝越界/符号链接/穿越。
 
     顺序（2026-10-26 加固）：
       a) 参数类型 / NUL 字节 / ".." 穿越检查
@@ -266,7 +303,8 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--data', default='{}')
     p.add_argument('--output-dir', default=DEFAULT_EXPORT_ROOT,
-                   help='报告输出目录；必须位于 ALLOWED_EXPORT_ROOTS 之内（默认 ./exports/）')
+                   help='报告输出目录；必须位于允许根 ./exports/ 之内（默认 ./exports/）；'
+                        'AIERA_EXPORT_ROOT 只能追加 ./exports/ 之内的子目录')
     p.add_argument('--print-default-export-root', action='store_true',
                    help='只读查询：打印默认导出根目录后退出，不生成任何文件')
     p.add_argument('--self-check', action='store_true',

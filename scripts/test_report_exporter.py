@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """
-ai-era-career-planner report_generator.py 路径安全验证（2026-09-08 T09 修复配套；
-2026-10-26 ClawHub 复审加固：修复 symlink 检查失效 + 测试不再删除真实导出目录）
+ai-era-career-planner report_generator.py 路径安全验证（T09 修复配套；
+2026-10-26 ClawHub 复审加固；2026-11-10 ClawHub 安全整改：导出根收敛到 ./exports/）
 
 ⚠️ 本测试只使用临时目录，绝不删除 SKILL_DIR/exports 下的任何文件。
    所有导出产物都写入 tempfile.mkdtemp() 建立的临时目录（并通过 AIERA_EXPORT_ROOT
    注入为允许根），shutil.rmtree 只作用于这些临时目录，且使用 ignore_errors=True。
    测试结束时会断言 SKILL_DIR/exports 的内容与运行前完全一致（只读比对）。
+
+🔒 2026-11-10 整改要点（导出根语义反转）：
+   旧语义：AIERA_EXPORT_ROOT 可把**任意**目录追加为允许根（测试 6 / 11 断言"成功"）。
+   新语义：允许根集合 = {./exports/}；AIERA_EXPORT_ROOT **只能追加 ./exports/ 之内
+   的子目录**。因此：
+     - Test 6  → 反转为「env 指向 ./exports/ 外部 → 必须被拒绝」
+     - Test 6b → 新增「env 指向 ./exports/ 内部子目录 → 必须成功」
+     - Test 11 → 反转为「plain abs dir（默认导出根之外）→ 必须被拒绝」
+   其余 10 个用例（越界拒绝 / 路径穿越拒绝 / symlink 拒绝 ×3 / 不覆盖 / NUL / 默认根）
+   断言不变。
+
+🔒 环境变量处理（2026-11-10，消 E2「Env Variable Harvesting」）：
+   旧实现 `env = os.environ.copy()` 会**枚举并复制全部环境变量**（可能夹带凭据）。
+   新实现只给**最小白名单**：PATH / HOME / LANG / PYTHONPATH（+ 用例显式传入的
+   AIERA_EXPORT_ROOT）。不复制、不枚举、不打印任何其他环境变量。
 
 测试范围：
   1. 默认 --output-dir 是 SKILL_DIR/exports/（通过「脚本副本 + 临时 skill 根」验证，
@@ -15,14 +30,15 @@ ai-era-career-planner report_generator.py 路径安全验证（2026-09-08 T09 �
   3. 越界路径应被拒绝
   4. 相对路径穿越（..）应被拒绝
   5. 连续两次导出不应覆盖前一次（collision-resistant 文件名）
-  6. 显式 allow root 通过环境变量 AIERA_EXPORT_ROOT 可扩展
-  7. 【新增】--output-dir 本身是指向 /tmp 的 symlink → 必须被拒绝
-  8. 【新增】父目录链中任一级是 symlink → 必须被拒绝
-  9. 【新增】允许根（AIERA_EXPORT_ROOT）本身是 symlink → 必须被拒绝，
+  6. [2026-11-10 反转] AIERA_EXPORT_ROOT 指向 ./exports/ **外部** → 必须被拒绝
+  6b.[2026-11-10 新增] AIERA_EXPORT_ROOT 指向 ./exports/ **内部子目录** → 必须成功
+  7. --output-dir 本身是指向 /tmp 的 symlink → 必须被拒绝
+  8. 父目录链中任一级是 symlink → 必须被拒绝
+  9. 允许根（AIERA_EXPORT_ROOT）本身是 symlink → 必须被拒绝，
      且文件**没有**写到 symlink 的目标目录
- 10. 【新增】默认 exports/ 目录被替换成 symlink → 必须被拒绝，
+ 10. 默认 exports/ 目录被替换成 symlink → 必须被拒绝，
      且文件**没有**写到 skill 目录之外
- 11. 【回归】用户显式指定普通真实绝对目录 → 仍能成功（防止修过头）
+ 11. [2026-11-10 反转] 用户显式指定普通真实绝对目录（在 ./exports/ 之外）→ 必须被拒绝
 """
 import os
 import shutil
@@ -39,8 +55,25 @@ DEFAULT_EXPORT = os.path.join(SKILL_DIR, "exports")
 PASS = "[PASS]"
 FAIL = "[FAIL]"
 
+# 🔒 2026-11-10：传给子进程的**最小白名单环境变量**。
+# 不再使用 os.environ.copy()（消 E2：Env Variable Harvesting）。
+MIN_ENV_KEYS = ("PATH", "HOME", "LANG", "PYTHONPATH")
+
 # 真实导出目录的初始快照（只读比对，测试绝不写入/删除它）
 _INITIAL_EXPORT_SNAPSHOT = None
+
+
+def _minimal_env(extra=None):
+    """构造最小白名单环境：只保留 PATH / HOME / LANG / PYTHONPATH + 显式传入项。"""
+    env = {}
+    for key in MIN_ENV_KEYS:
+        val = os.environ.get(key)
+        if val is not None:
+            env[key] = val
+    env.setdefault("LANG", "C.UTF-8")
+    if extra:
+        env.update(extra)
+    return env
 
 
 def _snapshot(path):
@@ -60,11 +93,7 @@ def _snapshot(path):
 
 
 def _run(script, args, env_extra=None, timeout=30):
-    env = os.environ.copy()
-    env["LANG"] = "C.UTF-8"
-    env.pop("AIERA_EXPORT_ROOT", None)
-    if env_extra:
-        env.update(env_extra)
+    env = _minimal_env(env_extra)
     return subprocess.run(
         ["python3", script] + args,
         capture_output=True, text=True, timeout=timeout, env=env, cwd=SKILL_DIR,
@@ -97,6 +126,7 @@ def _module_default_export_root():
     r = subprocess.run(
         ["python3", SCRIPT, "--print-default-export-root"],
         capture_output=True, text=True, timeout=30, cwd=SKILL_DIR,
+        env=_minimal_env(),
     )
     if r.returncode != 0:
         raise RuntimeError(f"self-introspection failed: exit={r.returncode}: {r.stderr[:200]}")
@@ -116,7 +146,7 @@ def test_default_output_dir():
     try:
         real_default = _module_default_export_root()
     except Exception as e:  # noqa: BLE001
-        print(f"  {FAIL} cannot import module to read DEFAULT_EXPORT_ROOT: {e}")
+        print(f"  {FAIL} cannot read DEFAULT_EXPORT_ROOT: {e}")
         return False
     if os.path.realpath(real_default or "") != os.path.realpath(DEFAULT_EXPORT):
         print(f"  {FAIL} DEFAULT_EXPORT_ROOT={real_default} != {DEFAULT_EXPORT}")
@@ -202,24 +232,57 @@ def test_collision_resistant_filename():
         return True
 
 
-def test_env_var_override():
-    """Test 6: 环境变量 AIERA_EXPORT_ROOT 应能扩展允许的导出根目录。"""
-    print("\nTest 6: AIERA_EXPORT_ROOT env var should extend allowed roots")
+def test_env_var_outside_root_rejected():
+    """Test 6 [2026-11-10 反转]: AIERA_EXPORT_ROOT 指向 ./exports/ **外部** → 必须被拒绝。
+
+    旧语义（2026-10-28）：env 扩展允许根 → 成功。
+    新语义（2026-11-10 整改，消 SDI-3 / TP4）：AIERA_EXPORT_ROOT 只能追加
+    ./exports/ 之内的子目录 → 指向外部目录时**被丢弃**（记 WARNING），
+    该目录不在允许根内 → 命令被拒绝，且**不得**在该目录产生任何报告文件。
+    """
+    print("\nTest 6 [reversed]: AIERA_EXPORT_ROOT pointing OUTSIDE ./exports/ -> must be REJECTED")
     with tempfile.TemporaryDirectory() as tmp:
         tmp_real = os.path.realpath(tmp)
         fake_skill, fake_script = _make_fake_skill(tmp)
         env_extra = {"AIERA_EXPORT_ROOT": tmp_real}
-        data = '{"nickname":"env-var-test"}'
-        # 目标目录在 fake skill 的默认根之外，只有 env 允许才能通过
+        data = '{"nickname":"env-var-outside"}'
         r = _run(fake_script, ["--data", data, "--output-dir", tmp_real], env_extra=env_extra)
+        if r.returncode == 0:
+            print(f"  {FAIL} out-of-root env var was ACCEPTED; stdout={r.stdout[:200]}")
+            return False
+        leaked = [f for f in os.listdir(tmp_real) if f.startswith("职业规划报告_")]
+        if leaked:
+            print(f"  {FAIL} report was written outside the export root: {leaked}")
+            return False
+        print(f"  {PASS} out-of-root env var rejected (exit={r.returncode}); "
+              f"nothing written to {tmp_real}")
+        print(f"         stderr: {r.stderr.strip()[:160]}")
+        return True
+
+
+def test_env_var_subdir_allowed():
+    """Test 6b [2026-11-10 新增]: AIERA_EXPORT_ROOT 指向 ./exports/ **内部子目录** → 必须成功。
+
+    这是收紧后**仍然可用**的正常用法：用户在 ./exports/ 下开一个自己的子目录
+    （如 ./exports/tracking/），通过 env 指定 → 允许根集合追加该子目录 → 写入成功。
+    """
+    print("\nTest 6b [new]: AIERA_EXPORT_ROOT pointing INSIDE ./exports/ -> must SUCCEED")
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_skill, fake_script = _make_fake_skill(tmp)
+        subdir = os.path.join(fake_skill, "exports", "tracking")
+        os.makedirs(subdir, exist_ok=True)
+        env_extra = {"AIERA_EXPORT_ROOT": subdir}
+        data = '{"nickname":"env-var-subdir"}'
+        r = _run(fake_script, ["--data", data, "--output-dir", subdir], env_extra=env_extra)
         if r.returncode != 0:
-            print(f"  {FAIL} env var override not honored: exit={r.returncode} stderr={r.stderr[:200]}")
+            print(f"  {FAIL} in-root env subdir was REJECTED: exit={r.returncode} "
+                  f"stderr={r.stderr[:200]}")
             return False
-        files = [f for f in os.listdir(tmp_real) if f.startswith("职业规划报告_")]
+        files = [f for f in os.listdir(subdir) if f.startswith("职业规划报告_")]
         if not files:
-            print(f"  {FAIL} no file created in env-var directory: {os.listdir(tmp_real)}")
+            print(f"  {FAIL} no report produced in the env subdir: {os.listdir(subdir)}")
             return False
-        print(f"  {PASS} env var honored; file: {files[0]}")
+        print(f"  {PASS} in-root env subdir accepted; file: {files[0]}")
         return True
 
 
@@ -227,7 +290,7 @@ def test_output_dir_is_symlink():
     """Test 7: --output-dir 本身是指向 /tmp 的 symlink → 必须被拒绝。
 
     这是 2026-10-26 加固的核心回归：旧实现先 resolve() 再查 is_symlink()，
-    resolve() 已经跟随了 symlink，检查永远为 False（本用例在旧实现下会 PASSED
+    resolve() 已经跟随了符号链接，检查永远为 False（本用例在旧实现下会 PASSED
     地写出文件）。
     """
     print("\nTest 7: --output-dir is a symlink pointing to /tmp -> must be REJECTED")
@@ -358,27 +421,31 @@ def test_default_exports_is_symlink():
         return True
 
 
-def test_plain_absolute_dir_still_works():
-    """Test 11 [回归]: 用户显式指定普通真实绝对目录 → 仍能成功。
+def test_plain_absolute_dir_rejected():
+    """Test 11 [2026-11-10 反转]: 用户显式指定普通真实绝对目录（在 ./exports/ 之外）→ 必须被拒绝。
 
-    防止修复过头：收窄豁免范围之后，正常的显式目录用法不能被误拒。
+    旧语义（2026-10-28）：plain abs dir → 成功（防「修过头」）。
+    新语义（2026-11-10 整改）：允许根唯一（./exports/）→ 任何外部绝对目录
+    都在边界之外 → 必须被拒绝。这正是 SDI-3 / TP4 的整改目标：
+    manifest 声明只允许写 ./exports/，代码就不能写到别处。
     """
-    print("\nTest 11 [regression]: explicit plain real absolute dir should still SUCCEED")
+    print("\nTest 11 [reversed]: explicit plain real absolute dir OUTSIDE ./exports/ -> must be REJECTED")
     with tempfile.TemporaryDirectory() as tmp:
         tmp_real = os.path.realpath(tmp)
         fake_skill, fake_script = _make_fake_skill(tmp)
         env_extra = {"AIERA_EXPORT_ROOT": tmp_real}
-        data = '{"nickname":"plain-dir-regression"}'
+        data = '{"nickname":"plain-dir-now-rejected"}'
         r = _run(fake_script, ["--data", data, "--output-dir", tmp_real], env_extra=env_extra)
-        if r.returncode != 0:
-            print(f"  {FAIL} plain absolute dir was REJECTED; exit={r.returncode} "
-                  f"stderr={r.stderr[:200]}")
+        if r.returncode == 0:
+            print(f"  {FAIL} plain absolute dir outside ./exports/ was ACCEPTED; "
+                  f"stdout={r.stdout[:200]}")
             return False
-        files = [f for f in os.listdir(tmp_real) if f.startswith("职业规划报告_")]
-        if not files:
-            print(f"  {FAIL} no report produced in the plain dir: {os.listdir(tmp_real)}")
+        leaked = [f for f in os.listdir(tmp_real) if f.startswith("职业规划报告_")]
+        if leaked:
+            print(f"  {FAIL} report was written to the plain dir: {leaked}")
             return False
-        print(f"  {PASS} plain absolute dir accepted; file: {files[0]}")
+        print(f"  {PASS} plain absolute dir rejected (exit={r.returncode}): "
+              f"{r.stderr.strip()[:120]}")
         return True
 
 
@@ -387,10 +454,11 @@ def main():
     _INITIAL_EXPORT_SNAPSHOT = _snapshot(DEFAULT_EXPORT)
 
     print("=" * 60)
-    print("ai-era-career-planner report_generator 路径安全验证 (T09 修复配套 + 2026-10-26 加固)")
+    print("ai-era-career-planner report_generator 路径安全验证 (T09 + 2026-10-26 + 2026-11-10 整改)")
     print("=" * 60)
     print(f"Script: {SCRIPT}")
     print(f"注意：只使用临时目录，绝不删除 {DEFAULT_EXPORT} 下的任何文件")
+    print(f"子进程环境变量：最小白名单 {MIN_ENV_KEYS}（不复制 os.environ）")
 
     results = [
         ("Test 1 (default output dir)",      test_default_output_dir()),
@@ -398,12 +466,13 @@ def main():
         ("Test 3 (outside allowed root)",    test_outside_allowed_root()),
         ("Test 4 (path traversal)",          test_path_traversal()),
         ("Test 5 (collision-resistant)",     test_collision_resistant_filename()),
-        ("Test 6 (env var override)",        test_env_var_override()),
+        ("Test 6 (env var outside -> reject)", test_env_var_outside_root_rejected()),
+        ("Test 6b (env var subdir -> allow)", test_env_var_subdir_allowed()),
         ("Test 7 (output-dir is symlink)",   test_output_dir_is_symlink()),
         ("Test 8 (parent chain symlink)",    test_parent_chain_symlink()),
         ("Test 9 (allowed root is symlink)", test_allowed_root_is_symlink()),
         ("Test 10 (default exports symlink)", test_default_exports_is_symlink()),
-        ("Test 11 (plain abs dir regression)", test_plain_absolute_dir_still_works()),
+        ("Test 11 (plain abs dir -> reject)", test_plain_absolute_dir_rejected()),
     ]
 
     print("\n" + "=" * 60)
