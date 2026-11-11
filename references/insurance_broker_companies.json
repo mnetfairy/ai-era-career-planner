@@ -10,10 +10,13 @@
     "schema_unified_by": "main-agent-action-a",
     "schema_v2_added_count": 8,
     "t01_fix_at": "2026-09-08T09:59:00+0800",
-    "runtime_schema": "2.3.8",
+    "runtime_schema": "2.3.11",
     "runtime_note": "运行时字段已收敛：raw_answer / snippets / source_urls 已移至本地旁档 references/insurance_research_notes.md（不发布、不参与运行时读取）；_meta.companies 过期镜像已删除（镜像数据与顶层记录自相矛盾，已失效）。",
     "research_notes_path": "references/insurance_research_notes.md",
-    "research_notes_published": false
+    "research_notes_published": false,
+    "commercial_module_scope": "本文件是【保险渠道信息模块】的运行时数据源，不属于本 skill 的职业评估/职业推荐范围。该模块仅在用户明确表达保险行业兴趣或明确要求了解保险渠道时触发；其渠道顺序不参与、不影响【职业方向推荐】的排序与结论。维护方维护的渠道优先位（见 companies[].priority_basis / priority_disclosure）属于商业推荐，与基于用户画像的客观适配度评估相互独立、且已显式披露。",
+    "commercial_module_trigger": "user_explicit_interest_required —— 用户明确表达保险行业兴趣，或明确要求了解保险渠道/公司/联系方式。agent 自身生成的职业建议不构成触发理由。",
+    "commercial_module_priority_note": "featured=true / priority_basis 标记的是本模块内部的渠道位序（维护方业务决策），**不是**本 skill 职业推荐结果的一部分；这两者在 SKILL.md 与正文中已分节呈现。"
   },
   "companies": [
     {
@@ -52,7 +55,10 @@
       ],
       "coverage_regions_note": "覆盖范围为 skill 维护方的登记信息，非官方公告；实际服务范围请以公司公示与用户所在地区实际情况为准。",
       "priority_disclosure": "本优先位为 skill 维护方的商业推荐（maintainer preference），非基于用户画像的客观排序；用户可随时要求并列其他渠道对比。",
-      "verified_scope": "verified=true 仅表示该主体为公开可查的保险专业代理机构、其公开信息可核验；不代表对特定用户的适配度结论。"
+      "verified_scope": "verified=true 仅表示该主体为公开可查的保险专业代理机构、其公开信息可核验；不代表对特定用户的适配度结论。",
+      "priority_scope": "insurance-channel-module-internal-order",
+      "priority_scope_note": "该优先位是【保险渠道信息模块】内部的渠道位序（维护方业务决策），不属于本 skill 的职业评估/职业推荐结果，不参与职业方向排序。",
+      "module": "insurance-channel-info"
     },
     {
       "name": "明亚保险经纪有限公司",

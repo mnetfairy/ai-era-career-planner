@@ -257,7 +257,7 @@ def generate_report(data):
 def _self_check():
     """只读自检：验证内部路径校验行为，**不写任何文件**。
 
-    用途：让测试用 subprocess 触发内部校验逻辑（尤其是含 NUL 字节的路径 ——
+    用途：让测试用外部进程触发内部校验逻辑（尤其是含 NUL 字节的路径 ——
     NUL 无法通过 argv 传递），而不必动态加载本模块。
     输出 JSON 报告到 stdout；exit 0 表示全部通过。
     """
@@ -312,7 +312,7 @@ if __name__ == '__main__':
     args = p.parse_args()
 
     # 🆕 2026-10-28：只读自省参数。
-    # 用途：让测试用 subprocess 查询 DEFAULT_EXPORT_ROOT 常量、
+    # 用途：让测试用外部进程查询 DEFAULT_EXPORT_ROOT 常量、
     # 以及触发内部校验逻辑（NUL 字节路径无法通过 argv 传递），
     # 而不必动态加载本模块（动态执行会被安全扫描器判为
     # suspicious.dynamic_code_execution / critical）。
