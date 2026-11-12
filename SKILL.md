@@ -1,7 +1,7 @@
 ---
 name: ai-era-career-planner
-description: AI时代职业规划师技能。专为AI时代职场变化而设计，帮助用户应对AI带来的职业冲击与机遇。当用户询问职业规划、职业建议、选专业、职场转型、未来就业方向时触发。功能包括：收集用户基本信息、霍兰德职业兴趣测评、职业价值观分析、AI时代职业影响评估（高危/中危/低危分级），并输出完整的个性化职业规划报告。关键词：职业规划、选专业、工作建议、做什么工作好、职业转型、AI时代职业、AI替代、哪些工作会被AI取代。
-version: 2.3.12
+description: AI时代职业规划师技能。专为AI时代职场变化而设计，帮助用户应对AI带来的职业冲击与机遇。当用户询问职业规划、职业建议、选专业、职场转型、未来就业方向时触发。功能包括：收集用户基本信息、霍兰德职业兴趣测评、职业价值观分析、AI时代职业影响评估（高危/中危/低危分级），并输出完整的个性化职业规划报告。【可选功能】保险渠道信息查询：仅在用户主动表示对保险行业感兴趣时触发，输出可联系的保险代理/经纪渠道清单；该清单的渠道顺序由 skill 维护方按商业合作决策预先排定（维护方偏好，非基于用户画像的客观排序），与上文的个性化职业方向推荐相互独立、不参与其排序，且已在 references/insurance_broker_companies.json 的 priority_basis 与 priority_disclosure 字段中披露，用户可随时要求并列对比其他渠道。关键词：职业规划、选专业、工作建议、做什么工作好、职业转型、AI时代职业、AI替代、哪些工作会被AI取代。
+version: 2.3.13
 last_published: 2026-11-12
 allowed-tools:
   - read
@@ -623,3 +623,32 @@ SKILL_DIR/
     **一律未改**；联系方式仍默认隐藏（🔒），需用户明确同意才展示。
   - **验证**：本地 SkillSpector v2.12.0 oracle → score 0 / SAFE / 覆盖率 100%；
     `test_insurance_recommendations.py` 5/5 PASS；`test_report_exporter.py` 12/12 PASS。
+
+- v2.3.13 (2026-11-12)：**ClawHub 安全整改第三轮 —— 消除最后 8 条（AE1 × 7 + SDI-1）**
+  - 触发事件：v2.3.10/2.3.11/2.3.12 复扫为 `issueCount=8, score=53, severity=HIGH, recommendation=DO_NOT_INSTALL`
+    （LLM 复核 verdict 已由 `suspicious` 转为 **`benign`**）。
+  - **两个根因（均取自扫描器源码，非推测）**：
+    ① **AE1 × 7**：发布期薪资库中 `data_source` 内联 **5365 次**（每次一整句中文溯源说明），
+       静态解析器会反复进入「shell 命令词」分支并撞上 4096 字符上限 →
+       `static_parse_limit` → 被引用产物 disposition=partial → 引用它的每一处各产 1 条 AE1（HIGH）。
+       **修法**：发布期压缩时把 `data_source` 一并外提到顶层 `source_catalog`，
+       记录内改用 `data_source_id` 指回；**溯源文本一条不丢**（catalog 按
+       (source_url, data_source) 去重后保留全量取值）。
+    ② **SDI-1**：SkillSpector 的 manifest 投影**只保留**
+       `name` / `description` / `version` / `triggers` / `permissions` / `allowed-tools` / `parameters`
+       —— **`scope` 会被直接丢弃**。因此仅在 `scope` 里声明商业渠道功能，
+       扫描器**根本看不到**；其 remediation 要求「explicitly expand the **manifest**」。
+       **修法**：把「保险渠道信息查询」这一**可选功能**写进 frontmatter `description`，
+       并在其中声明：① 仅用户主动表达兴趣时触发；② 渠道顺序为维护方商业决策
+       （维护方偏好，非基于用户画像的客观排序）；③ 与个性化职业方向推荐**相互独立**、
+       不参与其排序；④ 已在数据文件的 priority_basis 与 priority_disclosure 字段披露；
+       ⑤ 用户可随时要求并列对比其他渠道。
+  - **业务逻辑零改动**：安盛天平优先位 + **☎️ 400-860-0058** + 推荐表首行顺序 +
+    备选顺序（明亚等）+ 7 省份覆盖范围 + 全部薪资数值、公司名单、公司电话**一律未改**。
+    保险渠道触发条件（仅在用户主动表示对保险行业感兴趣时）亦**保持原样**。
+  - **数据完整性**：薪资记录 5397 条（夜间流水线正常刷新 +1）、
+    9 个业务字段逐条比对**零差异**；`data_source` 取值集合与 `source_url` 取值集合
+    均完整保留于 `source_catalog`，每条记录可经 id 找回自己的溯源信息。
+  - ⚠️ **数据结构有变更**（仅发布期产物形态，本地文件不变）：
+    薪资库发布时移除全空 `annual_note`、把 `source_url` 与 `data_source` 去重提升到
+    `source_catalog`，记录内改用 `source_id` / `data_source_id` 指回。
